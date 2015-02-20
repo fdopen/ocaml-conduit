@@ -13,18 +13,18 @@ case $OCAML_VERSION in
   echo Async backend only supported in OCaml 4.01.0 or higher
   ;;
 *)
-HAVE_ASYNC=`ocamlfind query async 2>/dev/null || true`
-HAVE_ASYNC_SSL=`ocamlfind query async_ssl 2>/dev/null || true`
+HAVE_ASYNC=""
+HAVE_ASYNC_SSL=""
 ;;
 esac
 
 HAVE_LWT=`ocamlfind query lwt 2>/dev/null || true`
-HAVE_LWT_SSL=`ocamlfind query lwt.ssl 2>/dev/null || true`
-HAVE_LWT_TLS=`ocamlfind query tls.lwt 2>/dev/null || true`
-HAVE_MIRAGE=`ocamlfind query mirage-types dns.mirage tcpip 2>/dev/null || true`
-HAVE_VCHAN=`ocamlfind query vchan 2>/dev/null || true`
-HAVE_VCHAN_LWT=`ocamlfind query vchan.lwt xen-evtchn.unix 2>/dev/null || true`
-HAVE_XEN=`ocamlfind query mirage-xen xenstore_transport 2>/dev/null || true`
+HAVE_LWT_SSL=""
+HAVE_LWT_TLS=""
+HAVE_MIRAGE=""
+HAVE_VCHAN=""
+HAVE_VCHAN_LWT=""
+HAVE_XEN=""
 
 add_target () {
   TARGETS="$TARGETS lib/$1.cmxs lib/$1.cma lib/$1.cmxa"
@@ -71,7 +71,7 @@ if [ "$HAVE_LWT" != "" ]; then
   echo Resolver_lwt > lib/conduit-lwt.mllib
   add_target "conduit-lwt"
   LWT_REQUIRES="lwt"
-  LWT_UNIX_REQUIRES="lwt.unix ipaddr.unix uri.services"
+  LWT_UNIX_REQUIRES="uwt ipaddr.unix uri.services"
 
   echo Conduit_lwt_unix > lib/conduit-lwt-unix.mllib
   echo Resolver_lwt_unix >> lib/conduit-lwt-unix.mllib
@@ -123,7 +123,7 @@ fi
 if [ "$HAVE_VCHAN" ]; then
   echo "Building with Vchan support."
   echo 'true: define(HAVE_VCHAN)' >> _tags
-fi 
+fi
 
 if [ "$HAVE_VCHAN_LWT" != "" ]; then
     echo "Building with Vchan Lwt_unix support."

@@ -53,8 +53,8 @@ let () = if !debug then
     (Sexplib.Sexp.to_string (sexp_of_tls_lib !tls_library))
 
 type +'a io = 'a Lwt.t
-type ic = Lwt_io.input_channel
-type oc = Lwt_io.output_channel
+type ic = Uwt_io.input_channel
+type oc = Uwt_io.output_channel
 
 type client_tls_config =
   [ `Hostname of string ] *
@@ -120,13 +120,13 @@ let sexp_of_ctx ctx =
      ctx.tls_server_key)
 
 type tcp_flow = {
-  fd: Lwt_unix.file_descr sexp_opaque;
+  fd: Uwt.Tcp.t sexp_opaque;
   ip: Ipaddr.t;
   port: int;
 } with sexp
 
 type domain_flow = {
-  fd: Lwt_unix.file_descr sexp_opaque;
+  fd: Uwt.Pipe.t sexp_opaque;
   path: string;
 } with sexp
 
@@ -145,34 +145,56 @@ let default_ctx =
   { src=None; tls_server_key=`None }
 
 let init ?src ?(tls_server_key=`None) () =
-  let open Unix in
+  let open Uwt.Dns in
   match src with
   | None ->
     return { src=None; tls_server_key }
   | Some host ->
-    Lwt_unix.getaddrinfo host "0" [AI_PASSIVE; AI_SOCKTYPE SOCK_STREAM]
+    getaddrinfo ~host ~service:"0" [Unix.AI_PASSIVE;
+                                    Unix.AI_SOCKTYPE SOCK_STREAM]
     >>= function
-    | {ai_addr;_}::_ -> return { src=Some ai_addr; tls_server_key }
+    | {ai_addr;_}::_ ->
+      let x = Uwt.Compat.to_unix_sockaddr ai_addr in
+      return { src=Some x; tls_server_key }
     | [] -> fail (Failure "Invalid conduit source address specified")
 
 let safe_close t =
   Lwt.catch
-    (fun () -> Lwt_io.close t)
+    (fun () -> Uwt_io.close t)
     (fun _ -> return_unit)
 
 (* Vanilla sockaddr connection *)
 module Sockaddr_client = struct
-  let connect ?src sa =
-    let fd = Lwt_unix.socket (Unix.domain_of_sockaddr sa) Unix.SOCK_STREAM 0 in
+  let connect_tcp ?src sa =
+    let st = Uwt.Tcp.init_exn () in
+    (* let fd = Lwt_unix.socket (Unix.domain_of_sockaddr sa) Unix.SOCK_STREAM 0 in*)
     let () =
       match src with
       | None -> ()
-      | Some src_sa -> Lwt_unix.bind fd src_sa
+      | Some src_sa ->
+        let src_sa = Uwt.Compat.of_unix_sockaddr src_sa in
+        Uwt.Tcp.bind_exn st src_sa
     in
-    Lwt_unix.connect fd sa >>= fun () ->
-    let ic = Lwt_io.of_fd ~mode:Lwt_io.input fd in
-    let oc = Lwt_io.of_fd ~mode:Lwt_io.output fd in
-    return (fd, ic, oc)
+    let sa = Uwt.Compat.of_unix_sockaddr sa in
+    Uwt.Tcp.connect st sa >>= fun () ->
+    let st' = Uwt.Tcp.to_stream st in
+    let ic = Uwt_io.of_stream ~mode:Uwt_io.input st' in
+    let oc = Uwt_io.of_stream ~mode:Uwt_io.output st' in
+    return (st, ic, oc)
+
+  let connect_pipe ?src path =
+    let st = Uwt.Pipe.init_exn () in
+    let () =
+      match src with
+      | None -> ()
+      | Some src_sa -> Uwt.Pipe.bind_exn st src_sa
+    in
+    Uwt.Pipe.connect st path >>= fun () ->
+    let st' = Uwt.Pipe.to_stream st in
+    let ic = Uwt_io.of_stream ~mode:Uwt_io.input st' in
+    let oc = Uwt_io.of_stream ~mode:Uwt_io.output st' in
+    return (st, ic, oc)
+
 end
 
 module Sockaddr_server = struct
@@ -181,6 +203,14 @@ module Sockaddr_server = struct
     safe_close oc >>= fun () ->
     safe_close ic
 
+
+  let init_socket_tcp sockaddr =
+    let sockaddr = Uwt.Compat.of_unix_sockaddr sockaddr in
+    let server = Uwt.Tcp.init_exn () in
+    Uwt.Tcp.bind_exn server sockaddr;
+    server
+
+  (*
   let init_socket sockaddr =
     Unix.handle_unix_error (fun () ->
       let sock = Lwt_unix.socket (Unix.domain_of_sockaddr sockaddr)
@@ -189,34 +219,39 @@ module Sockaddr_server = struct
       Lwt_unix.bind sock sockaddr;
       Lwt_unix.listen sock 15;
       sock) ()
+*)
 
-  let process_accept ?timeout callback (client,_) =
-    Lwt_unix.setsockopt client Lwt_unix.TCP_NODELAY true;
-    let ic = Lwt_io.of_fd ~mode:Lwt_io.input client in
-    let oc = Lwt_io.of_fd ~mode:Lwt_io.output client in
+  let process_accept ?timeout callback client =
+    let _ = Uwt.Tcp.nodelay client true in
+    let s_client = Uwt.Tcp.to_stream client in
+    let ic = Uwt_io.of_stream ~mode:Uwt_io.input s_client in
+    let oc = Uwt_io.of_stream ~mode:Uwt_io.output s_client in
     let c = callback client ic oc in
     let events = match timeout with
       |None -> [c]
-      |Some t -> [c; (Lwt_unix.sleep (float_of_int t)) ] in
+      |Some t -> [c; (Uwt.Timer.sleep (t * 1000)) ] in
     let _ = Lwt.pick events >>= fun () -> close (ic,oc) in
     return ()
 
   let init ~sockaddr ?(stop = fst (Lwt.wait ())) ?timeout callback =
-    let cont = ref true in
-    let s = init_socket sockaddr in
+    let sleeper,waker = Lwt.wait () in
+    let server = init_socket_tcp sockaddr in
     async (fun () ->
       stop >>= fun () ->
-      cont := false;
+      Uwt.Tcp.close_noerr server;
+      Lwt.wakeup waker ();
       return_unit
     );
-    let rec loop () =
-      if not !cont then return_unit
-      else
-        Lwt_unix.accept s >>=
-        process_accept ?timeout callback >>= fun () ->
-        loop ()
+    let cb server res =
+      if Uwt.Result.is_ok res then
+        match Uwt.Tcp.accept server with
+        | Uwt.Error _ -> ()
+        | Uwt.Ok client ->
+          let _ = process_accept ?timeout callback client in
+          ()
     in
-    loop ()
+    Uwt.Tcp.listen_exn server ~back:15 ~cb;
+    sleeper
 end
 
 (** TLS client connection functions *)
@@ -270,12 +305,12 @@ let connect ~ctx (mode:client) =
   match mode with
   | `TCP (`IP ip, `Port port) ->
     let sa = Unix.ADDR_INET (Ipaddr_unix.to_inet_addr ip, port) in
-    Sockaddr_client.connect ?src:ctx.src sa
+    Sockaddr_client.connect_tcp ?src:ctx.src sa
     >>= fun (fd, ic, oc) ->
     let flow = TCP {fd;ip;port} in
     return (flow, ic, oc)
   | `Unix_domain_socket (`File path) ->
-    Sockaddr_client.connect (Unix.ADDR_UNIX path)
+    Sockaddr_client.connect_pipe path
     >>= fun (fd, ic, oc) ->
     let flow = Domain_socket {fd; path} in
     return (flow, ic, oc)
@@ -345,10 +380,11 @@ let serve ?timeout ?stop ~(ctx:ctx) ~(mode:server) callback =
          (fun fd ic oc -> callback (TCP {fd; ip; port}) ic oc);
        >>= fun () -> t
   | `Unix_domain_socket (`File path) ->
-       let sockaddr = Unix.ADDR_UNIX path in
+    fail (Failure "Unix_domain_socket not implemented")
+    (*   let sockaddr = Unix.ADDR_UNIX path in
        Sockaddr_server.init ~sockaddr ?timeout ?stop
          (fun fd ic oc -> callback (Domain_socket {fd;path}) ic oc);
-       >>= fun () -> t
+       >>= fun () -> t *)
   | `TLS (`Crt_file_path certfile, `Key_file_path keyfile, pass, `Port port) ->
      serve_with_default_tls ?timeout ?stop ~ctx ~certfile ~keyfile
                             ~pass ~port callback t

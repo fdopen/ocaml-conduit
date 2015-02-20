@@ -43,9 +43,9 @@ let system_service name =
   (* TODO memoize *)
   Lwt.catch
     (fun () ->
-      Lwt_unix.getservbyname name "tcp" >>= fun s ->
+      Uwt.Unix.getservbyname name "tcp" >>= fun s ->
       let tls = is_tls_service name in
-      let svc = { Resolver.name; port=s.Lwt_unix.s_port; tls } in
+      let svc = { Resolver.name; port=s.Unix.s_port; tls } in
       return (Some svc))
     (function Not_found -> return_none | e -> fail e)
 
@@ -73,10 +73,10 @@ let get_port service uri =
 (* Build a default resolver that uses the system gethostbyname and
    the /etc/services file *)
 let system_resolver service uri =
-  let open Lwt_unix in
+  let open Unix in
   let host = get_host uri in
   let port = get_port service uri in
-  getaddrinfo host (string_of_int port) [AI_SOCKTYPE SOCK_STREAM]
+  Uwt.Unix.getaddrinfo host (string_of_int port) [AI_SOCKTYPE SOCK_STREAM]
   >>= function
   | [] -> return_endp "system" service uri (`Unknown ("name resolution failed"))
   | {ai_addr=ADDR_INET (addr,port);_}::_ ->

@@ -69,12 +69,12 @@ type server = [
 ] with sexp
 
 type 'a io = 'a Lwt.t
-type ic = Lwt_io.input_channel
-type oc = Lwt_io.output_channel
+type ic = Uwt_io.input_channel
+type oc = Uwt_io.output_channel
 
 (** [tcp_flow] contains the state of a single TCP connection. *)
 type tcp_flow = private {
-  fd: Lwt_unix.file_descr sexp_opaque;
+  fd: Uwt.Tcp.t sexp_opaque;
   ip: Ipaddr.t;
   port: int;
 } with sexp_of
@@ -82,7 +82,7 @@ type tcp_flow = private {
 (** [domain_flow] contains the state of a single Unix domain socket
     connection. *)
 type domain_flow = private {
-  fd: Lwt_unix.file_descr sexp_opaque;
+  fd: Uwt.Pipe.t sexp_opaque;
   path: string;
 } with sexp_of
 
